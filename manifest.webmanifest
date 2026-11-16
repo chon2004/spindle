@@ -30,6 +30,53 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Shuffle everything",
+      "short_name": "Shuffle",
+      "description": "Play your whole library in random order",
+      "url": "./?do=shuffle",
+      "icons": [
+        {
+          "src": "sc-shuffle.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Resume",
+      "short_name": "Resume",
+      "description": "Pick up where you left off",
+      "url": "./?do=resume",
+      "icons": [
+        {
+          "src": "sc-resume.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Playlists",
+      "short_name": "Playlists",
+      "description": "Go straight to your playlists",
+      "url": "./?do=playlists",
+      "icons": [
+        {
+          "src": "sc-lists.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }
