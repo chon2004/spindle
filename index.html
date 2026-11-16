@@ -1008,6 +1008,13 @@ let artBlobs = new Map(), artUrls = new Map();
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
 const albumKey = t => ((t.albumArtist || t.artist || 'Unknown') + '\u0001' + (t.album || 'Unknown')).toLowerCase();
 const listArtKey = id => 'list\u0001' + id;
+const artistArtKey = key => 'artist\u0001' + key;
+/* an artist shows their own cover if one was set, otherwise the first album's */
+function artistCover(key, items){
+  const own = artistArtKey(key);
+  if(artBlobs.has(own)) return own;
+  return (items && items[0] ? items[0].artKey : null);
+}
 /* a playlist shows its own cover if one was set, otherwise the first track's */
 function listCover(l, items){
   const own = listArtKey(l.id);
@@ -1572,7 +1579,7 @@ function render(){
   else if(tab === 'artists'){
     main.innerHTML = groupArtists().map(a =>
       '<button class="row" data-artist="' + esc(a.key) + '" style="grid-template-columns:var(--thumb) minmax(0,1fr) auto">'
-      + '<div class="art">' + artHTML(a.items[0].artKey, 40) + '</div>'
+      + '<div class="art">' + artHTML(artistCover(a.key, a.items), 40) + '</div>'
       + '<div><div class="rt">' + esc(a.name) + '</div>'
       + '<div class="rs">' + a.items.length + (a.items.length===1?' track':' tracks') + '</div></div>'
       + '<div class="rtime"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 5l7 7-7 7"/></svg></div>'
@@ -1610,7 +1617,7 @@ function renderDetail(main){
     const a = groupArtists().find(x => x.key === detail.key);
     if(!a){ detail = null; return render(); }
     items = a.items.slice().sort(byTitle);
-    name = a.name; kind = 'Artist'; key = a.items[0].artKey;
+    name = a.name; kind = 'Artist'; key = artistCover(a.key, a.items);
     const albums = new Set(a.items.map(albumKey)).size;
     sub = albums + (albums===1 ? ' album' : ' albums');
   }
@@ -1636,6 +1643,7 @@ function renderDetail(main){
     + '<div id="detailActions"><button class="pill solid" data-act="playall">Play</button>'
     + '<button class="pill" data-act="shuffleall">Shuffle</button>'
     + (detail.kind === 'list' ? '<button class="pill" data-act="listmenu">Edit</button>' : '')
+    + (detail.kind === 'artist' ? '<button class="pill" data-act="artistmenu">Cover</button>' : '')
     + '</div>'
     + (items.length
        ? items.map((t,i)=>rowHTML(t,i,{forceSleeve:isAlbum, useTrackNo:isAlbum, hideArtist:isAlbum}))
@@ -2152,7 +2160,7 @@ $('#soundBody').addEventListener('click', e => {
 
 /* ---------------- tag editor ---------------- */
 let editing = null, pendingArt = null;
-let artPickFor = 'track', artPickList = null;
+let artPickFor = 'track', artPickList = null, artPickArtist = null;
 function openEditor(id, fromSheet){
   const t = trackById(id); if(!t) return;
   editing = id; pendingArt = null;
@@ -2191,6 +2199,15 @@ $('#edBody').addEventListener('click', e => {
 $('#artPick').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if(!f) return;
+  if(artPickFor === 'artist'){
+    const key = artistArtKey(artPickArtist);
+    artBlobs.set(key, f); dropArtUrl(key);
+    try{ await put('art', {key, blob: f}); }
+    catch(err){ toast("That image couldn't be saved"); return; }
+    render(); paint();
+    toast('Cover set');
+    return;
+  }
   if(artPickFor === 'list'){
     const l = lists.find(x => x.id === artPickList);
     if(!l) return;
@@ -2350,6 +2367,17 @@ $('#main').addEventListener('click', e => {
     if(a === 'newlist') newPlaylist();
     if(a === 'playall'){ shuffle = false; playList(main._ids, main._ids[0], main._label); openPlayer(); }
     if(a === 'shuffleall'){ shuffle = true; playList(main._ids, null, main._label); openPlayer(); }
+    if(a === 'artistmenu' && detail){
+      const g = groupArtists().find(x => x.key === detail.key);
+      openSheet('<div id="sheetHead"><div class="t">' + esc(g ? g.name : 'Artist') + '</div></div>'
+        + '<button class="sheetItem" data-s="artistcover" data-id="' + esc(detail.key) + '">'
+        + SI.image + 'Choose a cover</button>'
+        + (artBlobs.has(artistArtKey(detail.key))
+            ? '<button class="sheetItem" data-s="artistcoveroff" data-id="' + esc(detail.key) + '">'
+              + SI.undo + 'Use the first album instead</button>'
+            : ''));
+      return;
+    }
     if(a === 'listmenu' && detail){
       const l = lists.find(x => x.id === detail.key);
       openSheet('<div id="sheetHead"><div class="t">' + esc(l.name) + '</div></div>'
@@ -2399,6 +2427,17 @@ $('#sheet').addEventListener('click', async e => {
     const l = lists.find(x => x.id === id);
     const n = await ask('Rename playlist', l.name, 'Rename');
     if(n){ l.name = n; await put('lists', l); render(); }
+  }
+  if(s === 'artistcover'){
+    artPickFor = 'artist'; artPickArtist = id;
+    closeSheetRaw(); $('#artPick').click();
+    return;
+  }
+  if(s === 'artistcoveroff'){
+    const key = artistArtKey(id);
+    artBlobs.delete(key); dropArtUrl(key);
+    try{ await del('art', key); }catch(e){}
+    render(); paint(); toast('Back to the first album');
   }
   if(s === 'listcover'){
     artPickFor = 'list'; artPickList = id;
