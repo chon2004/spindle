@@ -1532,7 +1532,7 @@ function prev(){
 }
 function toggle(){
   if(!current()){ if(tracks.length) playList(tracks.map(t=>t.id), tracks[0].id, 'Songs'); return; }
-  au.paused ? au.play().catch(()=>{}) : au.pause();
+  if(au.paused) resumePlay(); else au.pause();
 }
 let posT = 0;
 function wire(el){
@@ -1542,12 +1542,12 @@ function wire(el){
   });
   el.addEventListener('play', () => {
     if(el !== au) return;
-    paint(); mediaState(); mediaPosition();
+    paint(); mediaState(); mediaPosition(); setMediaHandlers();
     if(AC && AC.state === 'suspended') AC.resume().catch(()=>{});
   });
   el.addEventListener('pause', () => {
     if(el !== au || fadingOver) return;
-    paint(); mediaState(); rememberPlayback(true);
+    paint(); mediaState(); setMediaHandlers(); rememberPlayback(true);
   });
   el.addEventListener('timeupdate', () => {
     if(el !== au) return;
@@ -1613,11 +1613,39 @@ function mediaSession(t){
                   {src:u, sizes:'512x512', type:'image/jpeg'}] : []
   });
   mediaState(); mediaPosition();
-  const h = {play:()=>au.play(), pause:()=>au.pause(), previoustrack:prev, nexttrack:()=>next(),
-             seekbackward:()=>au.currentTime=Math.max(0,au.currentTime-10),
-             seekforward:()=>au.currentTime=au.currentTime+10,
-             seekto:d=>{ if(d.seekTime!=null) au.currentTime=d.seekTime; }};
-  for(const k in h){ try{ navigator.mediaSession.setActionHandler(k, h[k]); }catch(e){} }
+  setMediaHandlers();
+}
+
+/* Resuming is fussier than pausing: the audio engine may have been suspended
+   while we were in the background, and play() can be rejected the first time. */
+async function resumePlay(){
+  try{ if(AC && AC.state === 'suspended') await AC.resume(); }catch(e){}
+  try{ au.volume = 1; }catch(e){}
+  try{ await au.play(); }
+  catch(e){
+    try{ await new Promise(r => setTimeout(r, 120)); await au.play(); }
+    catch(e2){}
+  }
+  mediaState(); mediaPosition();
+}
+let mediaHandlers = null;
+function setMediaHandlers(){
+  if(!('mediaSession' in navigator)) return;
+  mediaHandlers = {
+    play: () => resumePlay(),
+    // Some headsets send only one key. If we are told to pause while already
+    // paused, the press means "start again".
+    pause: () => { if(au.paused) return resumePlay(); au.pause(); mediaState(); },
+    stop: () => { au.pause(); mediaState(); },
+    previoustrack: () => prev(),
+    nexttrack: () => next(),
+    seekbackward: () => { au.currentTime = Math.max(0, au.currentTime - 10); mediaPosition(); },
+    seekforward: () => { au.currentTime = au.currentTime + 10; mediaPosition(); },
+    seekto: d => { if(d && d.seekTime != null){ au.currentTime = d.seekTime; mediaPosition(); } }
+  };
+  for(const k in mediaHandlers){
+    try{ navigator.mediaSession.setActionHandler(k, mediaHandlers[k]); }catch(e){}
+  }
 }
 
 /* ---------------- art ---------------- */
@@ -3538,6 +3566,7 @@ async function handleLaunchAction(){
   applySpeed();
   if(!fxNeutral()) applySound(false);
   try{ await restorePlayback(); }catch(e){}
+  setMediaHandlers();
   paint();
   try{ await handleLaunchAction(); }catch(e){}
   if(document.readyState === 'complete') setupOffline();
