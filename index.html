@@ -333,6 +333,43 @@ body[data-cols="3"] .grid{grid-template-columns:repeat(3,1fr)}
 #edArtRow{display:flex;gap:15px;align-items:center;padding:4px 18px 18px}
 #edArt{width:84px;height:84px}
 
+.sortbtn{
+  display:flex;align-items:center;gap:7px;padding:13px 18px 9px;
+  color:var(--ink2);font-size:12.5px;width:100%;text-align:left;
+}
+.sortbtn b{font-weight:500;color:var(--ink)}
+
+/* ---------- selection, reorder, flags ---------- */
+.row.sel{background:color-mix(in srgb, var(--accent) 12%, transparent)}
+.cbox{
+  width:21px;height:21px;border:1.5px solid var(--ink2);flex:none;display:grid;
+  place-items:center;color:var(--onAccent);border-radius:1px;
+}
+.row.sel .cbox{background:var(--accent);border-color:var(--accent)}
+.cbox svg{opacity:0}
+.row.sel .cbox svg{opacity:1}
+.rflags{display:flex;align-items:center;gap:6px}
+.heart{color:var(--accent);flex:none}
+.missing{
+  font-size:9.5px;letter-spacing:.06em;color:var(--ink3);
+  border:1px solid var(--rule);padding:1px 5px;white-space:nowrap;
+}
+.rmove{display:flex;flex-direction:column;gap:2px;margin-right:-4px}
+.rmove button{
+  width:30px;height:21px;display:grid;place-items:center;color:var(--ink2);
+  border:1px solid var(--rule);
+}
+#selbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:45;background:var(--paper2);
+  border-top:1px solid var(--ink2);padding-bottom:var(--safe-b);
+  transform:translateY(130%);transition:transform .25s cubic-bezier(.3,.8,.3,1);
+}
+#selbar.up{transform:none}
+#selrow{display:flex;align-items:center;gap:10px;height:var(--bar);padding:0 14px}
+#selcount{flex:1;font-size:13.5px}
+#selbar .pill{padding:7px 12px;font-size:12.5px}
+.smartrow .art{display:grid;place-items:center;color:var(--accent);background:var(--sunk)}
+
 /* ---------- sound page ---------- */
 #eqRow{display:flex;gap:6px;padding:4px 16px 0;align-items:stretch}
 .band{flex:1;display:flex;flex-direction:column;align-items:center;gap:7px;min-width:0}
@@ -573,11 +610,23 @@ body[data-dark="1"] .sheetItem.danger{color:#E08B77}
 </div>
 <div id="sheet"></div>
 
+<div id="selbar">
+  <div id="selrow">
+    <div id="selcount">0 selected</div>
+    <button class="pill" data-sel="all">All</button>
+    <button class="pill" data-sel="playlist">Add to…</button>
+    <button class="pill" data-sel="remove">Remove</button>
+    <button class="pill solid" data-sel="done">Done</button>
+  </div>
+</div>
+
 <div id="imp"><div id="impT"></div><div id="impBar"><i></i></div></div>
 <div id="toast"></div>
 
 <input type="file" id="filePick" accept="audio/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus,.m4b" multiple class="hide">
 <input type="file" id="artPick" accept="image/*" class="hide">
+<input type="file" id="dirPick" webkitdirectory multiple class="hide">
+<input type="file" id="backupPick" accept="application/json,.json" class="hide">
 <audio id="au" preload="metadata"></audio>
 
 <script>
@@ -733,7 +782,7 @@ const ACCENTS = {
 const DEFAULTS = {
   theme:'sleeve', accent:'petrol', paperCustom:'', accentCustom:'',
   inkStrength:'normal', grain:1, artAccent:0,
-  rows:'comfortable', listStyle:'artwork', cols:'auto',
+  rows:'comfortable', listStyle:'artwork', cols:'auto', sort:'title',
   eq:[0,0,0,0,0,0], vocals:0, speed:1,
   tabs:['songs','albums','artists','playlists']
 };
@@ -1025,6 +1074,18 @@ const artistOf = t => t.artist || t.albumArtist || 'Unknown artist';
 const numOf = v => { const n = parseInt(String(v||'').split('/')[0],10); return isFinite(n) ? n : 9999; };
 const coll = new Intl.Collator(undefined,{sensitivity:'base',numeric:true});
 const byTitle = (a,b) => coll.compare(a.title||'', b.title||'') || coll.compare(artistOf(a),artistOf(b));
+const SORTS = {
+  title:  {name:'Title',           fn: byTitle},
+  artist: {name:'Artist',          fn:(a,b)=>coll.compare(artistOf(a),artistOf(b))
+                                            || coll.compare(a.album||'',b.album||'')
+                                            || numOf(a.trackNo)-numOf(b.trackNo)},
+  album:  {name:'Album',           fn:(a,b)=>coll.compare(a.album||'',b.album||'')
+                                            || numOf(a.trackNo)-numOf(b.trackNo)},
+  added:  {name:'Recently added',  fn:(a,b)=>(b.addedAt||0)-(a.addedAt||0)},
+  played: {name:'Most played',     fn:(a,b)=>(b.plays||0)-(a.plays||0) || byTitle(a,b)},
+  recent: {name:'Recently played', fn:(a,b)=>(b.lastPlayed||0)-(a.lastPlayed||0) || byTitle(a,b)}
+};
+const sortTracks = (a,b) => (SORTS[S.sort] || SORTS.title).fn(a,b);
 
 function artUrl(key){
   if(!key) return null;
@@ -1049,7 +1110,8 @@ async function load(){
   if(!Array.isArray(S.eq) || S.eq.length !== EQ_BANDS.length) S.eq = DEFAULTS.eq.slice();
   S.vocals = Math.max(-1, Math.min(1, Number(S.vocals) || 0));
   if(!SPEEDS.includes(S.speed)) S.speed = 1;
-  tracks.sort(byTitle);
+  if(!SORTS[S.sort]) S.sort = 'title';
+  tracks.sort(sortTracks);
 }
 
 /* ---------------- import ---------------- */
@@ -1063,19 +1125,41 @@ async function importFiles(fileList){
   importing = true;
   try{ await navigator.storage?.persist?.(); }catch(e){}
 
-  const seen = new Set(tracks.map(t => t.fileName + '\u0001' + t.size));
-  const queueIn = files.filter(f => !seen.has(f.name + '\u0001' + f.size));
-  const dupes = files.length - queueIn.length;
-  if(!queueIn.length){ importing = false; toast(dupes + ' already in your library'); return; }
+  // A record restored from a backup has its details but no audio yet. If the
+  // matching file turns up, attach it to that record instead of making a new one.
+  const byFile = new Map();
+  tracks.forEach(t => byFile.set(t.fileName + '\u0001' + t.size, t));
+  const relink = [], queueIn = [];
+  let dupes = 0;
+  for(const f of files){
+    const hit = byFile.get(f.name + '\u0001' + f.size);
+    if(hit && hit.missing) relink.push([f, hit]);
+    else if(hit) dupes++;
+    else queueIn.push(f);
+  }
+  if(!queueIn.length && !relink.length){
+    importing = false; toast(dupes + ' already in your library'); return;
+  }
 
   $('#imp').classList.add('up');
-  let done = 0, added = 0, failed = 0, full = false;
+  let done = 0, added = 0, failed = 0, restored = 0, full = false;
+  const total = queueIn.length + relink.length;
   const show = () => {
-    $('#impT').textContent = 'Adding music — ' + done + ' of ' + queueIn.length;
-    $('#impBar>i').style.width = (done/queueIn.length*100) + '%';
+    $('#impT').textContent = 'Adding music — ' + done + ' of ' + total;
+    $('#impBar>i').style.width = (done/total*100) + '%';
   };
   show();
 
+  const reattach = async ([f, t]) => {
+    try{
+      await put('files', {id: t.id, blob: f});
+      delete t.missing;
+      if(!t.duration) t.duration = await duration(f);
+      await put('tracks', t);
+      restored++;
+    }catch(e){ failed++; }
+    done++; show();
+  };
   const work = async f => {
     try{
       const tag = await readTags(f);
@@ -1100,12 +1184,16 @@ async function importFiles(fileList){
     }
     done++; show();
   };
+  let rc = 0;
+  await Promise.all(Array.from({length:3}, async () => {
+    while(rc < relink.length && !full) await reattach(relink[rc++]);
+  }));
   let cursor = 0;
   await Promise.all(Array.from({length:3}, async () => {
     while(cursor < queueIn.length && !full) await work(queueIn[cursor++]);
   }));
 
-  tracks.sort(byTitle);
+  tracks.sort(sortTracks);
   importing = false;
   $('#imp').classList.remove('up');
   render();
@@ -1114,10 +1202,129 @@ async function importFiles(fileList){
         + 'Remove some tracks to make room.');
     return;
   }
-  let msg = 'Added ' + added + (added===1?' track':' tracks');
+  let msg = added ? 'Added ' + added + (added===1?' track':' tracks') : '';
+  if(restored) msg = (msg ? msg + '. ' : '') + 'Reconnected ' + restored
+                   + (restored===1 ? ' track from your backup' : ' tracks from your backup');
+  if(!msg) msg = 'Nothing new';
   if(dupes) msg += '. ' + dupes + ' already here';
   if(failed) msg += '. ' + failed + " couldn't be read";
   toast(msg);
+}
+
+/* ---------------- backup ---------------- */
+const blobToData = b => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result); r.onerror = () => rej(r.error);
+  r.readAsDataURL(b);
+});
+const dataToBlob = async d => (await fetch(d)).blob();
+
+function saveFile(blob, name){
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = u; a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 4000);
+}
+
+/* Everything except the audio itself — details, playlists, covers, settings.
+   The music files stay where they are; re-adding them reconnects them. */
+async function exportBackup(){
+  toast('Building your backup…');
+  try{
+    const art = [];
+    for(const [key, blob] of artBlobs){
+      try{ art.push({key, data: await blobToData(blob)}); }catch(e){}
+    }
+    const data = {
+      app: 'spindle', format: 1, exported: new Date().toISOString(),
+      tracks: tracks.map(t => Object.assign({}, t)),
+      lists: lists.map(l => Object.assign({}, l)),
+      settings: S,
+      art
+    };
+    const blob = new Blob([JSON.stringify(data)], {type:'application/json'});
+    const stamp = new Date().toISOString().slice(0,10);
+    saveFile(blob, 'spindle-backup-' + stamp + '.json');
+    toast('Backup saved — ' + tracks.length + ' tracks, ' + art.length + ' covers');
+  }catch(e){
+    toast("Couldn't build the backup");
+  }
+}
+
+async function restoreBackup(file){
+  let data;
+  try{ data = JSON.parse(await file.text()); }
+  catch(e){ toast("That file isn't a Spindle backup"); return; }
+  if(!data || data.app !== 'spindle' || !Array.isArray(data.tracks)){
+    toast("That file isn't a Spindle backup"); return;
+  }
+
+  $('#imp').classList.add('up');
+  $('#impT').textContent = 'Restoring…';
+  $('#impBar>i').style.width = '10%';
+
+  // Ids from the backup may collide with what is already here, so map them.
+  const idMap = {};
+  const byFile = new Map();
+  tracks.forEach(t => byFile.set(t.fileName + '\u0001' + t.size, t));
+  let added = 0, merged = 0;
+
+  for(const bt of data.tracks){
+    const hit = byFile.get(bt.fileName + '\u0001' + bt.size);
+    if(hit){
+      idMap[bt.id] = hit.id;
+      const keepId = hit.id, keepMissing = hit.missing;
+      Object.assign(hit, bt, {id: keepId});
+      if(keepMissing) hit.missing = true; else delete hit.missing;
+      await put('tracks', hit); merged++;
+    } else {
+      idMap[bt.id] = bt.id;
+      bt.missing = true;                   // details are here, the audio is not
+      tracks.push(bt);
+      byFile.set(bt.fileName + '\u0001' + bt.size, bt);
+      await put('tracks', bt); added++;
+    }
+  }
+  $('#impBar>i').style.width = '55%';
+
+  for(const bl of (data.lists || [])){
+    const mapped = (bl.trackIds || []).map(id => idMap[id]).filter(Boolean);
+    const existing = lists.find(l => l.id === bl.id || l.name === bl.name);
+    if(existing){
+      const have = new Set(existing.trackIds);
+      existing.trackIds = existing.trackIds.concat(mapped.filter(id => !have.has(id)));
+      await put('lists', existing);
+    } else {
+      const l = {id: bl.id || uid(), name: bl.name || 'Playlist', trackIds: mapped};
+      lists.push(l); await put('lists', l);
+    }
+  }
+  $('#impBar>i').style.width = '80%';
+
+  for(const a of (data.art || [])){
+    if(artBlobs.has(a.key)) continue;
+    try{
+      const blob = await dataToBlob(a.data);
+      artBlobs.set(a.key, blob);
+      await put('art', {key: a.key, blob});
+    }catch(e){}
+  }
+
+  if(data.settings){
+    S = Object.assign({}, DEFAULTS, data.settings);
+    if(!Array.isArray(S.eq) || S.eq.length !== EQ_BANDS.length) S.eq = DEFAULTS.eq.slice();
+    if(!SPEEDS.includes(S.speed)) S.speed = 1;
+    await saveSettings();
+    applySettings(); applySpeed();
+  }
+
+  tracks.sort(sortTracks);
+  $('#imp').classList.remove('up');
+  render(); paint();
+  const missing = tracks.filter(t => t.missing).length;
+  toast('Restored ' + added + ' and updated ' + merged
+      + (missing ? '. ' + missing + ' need their files adding again' : ''));
 }
 
 /* ---------------- playback ---------------- */
@@ -1177,9 +1384,29 @@ async function restorePlayback(){
   mediaSession(trackById(v.id));
 }
 
+let counted = false;
+async function countPlay(){
+  const t = current();
+  if(!t || counted) return;
+  const mark = Math.min(30, (t.duration || 60) * 0.4);
+  if(au.currentTime < mark) return;
+  counted = true;
+  t.plays = (t.plays || 0) + 1;
+  t.lastPlayed = Date.now();
+  try{ await put('tracks', t); }catch(e){}
+}
+async function toggleFav(id){
+  const t = trackById(id); if(!t) return;
+  t.fav = !t.fav;
+  try{ await put('tracks', t); }catch(e){}
+  render(); paint();
+  toast(t.fav ? 'Added to favourites' : 'Removed from favourites');
+}
+
 async function start(){
   const t = current();
   if(!t) return;
+  counted = false;
   const rec = await getOne('files', t.id);
   if(!rec){ toast('That file is missing from storage'); return next(); }
   if(srcUrl) URL.revokeObjectURL(srcUrl);
@@ -1219,7 +1446,7 @@ au.addEventListener('play', () => {
 au.addEventListener('pause', () => { paint(); mediaState(); rememberPlayback(true); });
 let posT = 0;
 au.addEventListener('timeupdate', () => {
-  tick(); rememberPlayback();
+  tick(); rememberPlayback(); countPlay();
   const now = Date.now();
   if(now - posT > 1000){ posT = now; mediaPosition(); }
 });
@@ -1487,6 +1714,29 @@ function updateSleepLive(){
 
 /* ---------------- views ---------------- */
 let tab = 'songs', detail = null, query = '';
+let selectMode = false, selected = new Set(), reorderMode = false;
+const SMART = {
+  fav:    {name:'Favourites',      pick: () => tracks.filter(t => t.fav).sort(sortTracks)},
+  recent: {name:'Recently played', pick: () => tracks.filter(t => t.lastPlayed)
+             .sort((a,b) => (b.lastPlayed||0)-(a.lastPlayed||0)).slice(0,100)},
+  played: {name:'Most played',     pick: () => tracks.filter(t => t.plays)
+             .sort((a,b) => (b.plays||0)-(a.plays||0)).slice(0,100)}
+};
+function exitSelect(){
+  selectMode = false; selected.clear();
+  $('#selbar').classList.remove('up');
+  render(); paint();
+}
+function enterSelect(id){
+  selectMode = true; selected.clear();
+  if(id) selected.add(id);
+  reorderMode = false;
+  $('#selbar').classList.add('up');
+  render(); paintSelCount();
+}
+function paintSelCount(){
+  $('#selcount').textContent = selected.size + ' selected';
+}
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function groupAlbums(){
@@ -1513,28 +1763,47 @@ function rowHTML(t, i, opts){
   opts = opts || {};
   const playing = current()?.id === t.id;
   const live = playing && !au.paused;
-  const sleeve = S.listStyle === 'sleeve' || opts.forceSleeve;
-  const more = '<button class="rmore" data-more="' + t.id + '" aria-label="More options">'
-    + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5.5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="18.5" r="1.5"/></svg></button>';
+  const sleeve = (S.listStyle === 'sleeve' || opts.forceSleeve) && !selectMode;
+  const picked = selectMode && selected.has(t.id);
+  const tick = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4"><path d="M5 12.5l4.5 4.5L19 7"/></svg>';
   const meter = '<span class="meter' + (live?' on':'') + '"><span></span><span></span><span></span></span>';
+
+  const flags = '<div class="rflags">'
+    + (t.missing ? '<span class="missing">no file</span>' : '')
+    + (t.fav ? '<svg class="heart" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">'
+             + '<path d="M12 20s-7-4.5-7-9.5A4 4 0 0112 8a4 4 0 017 2.5C19 15.5 12 20 12 20z"/></svg>' : '')
+    + '<span class="rtime">' + (t.duration ? fmt(t.duration) : '') + '</span></div>';
+
+  const trail = opts.reorder
+    ? '<div class="rmove">'
+      + '<button data-move="up" data-id="' + t.id + '" aria-label="Move up">'
+      + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 15l6-6 6 6"/></svg></button>'
+      + '<button data-move="down" data-id="' + t.id + '" aria-label="Move down">'
+      + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></button>'
+      + '</div>'
+    : '<button class="rmore" data-more="' + t.id + '" aria-label="More options">'
+      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5.5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="18.5" r="1.5"/></svg></button>';
+
+  const cls = 'row' + (sleeve ? ' sleeve' : '') + (playing ? ' playing' : '') + (picked ? ' sel' : '');
 
   if(sleeve){
     const n = opts.useTrackNo && numOf(t.trackNo) !== 9999 ? numOf(t.trackNo) : (i+1);
-    return '<div class="row sleeve' + (playing?' playing':'') + '" data-id="' + t.id + '" role="button" tabindex="0">'
+    return '<div class="' + cls + '" data-id="' + t.id + '" role="button" tabindex="0">'
       + '<div class="rn">' + (playing ? meter : n) + '</div>'
       + '<div class="rt">' + esc(t.title || t.fileName)
       + (opts.hideArtist ? '' : '<span class="alb">' + esc(artistOf(t)) + '</span>') + '</div>'
       + '<div class="leader"></div>'
-      + '<div class="rtime">' + (t.duration ? fmt(t.duration) : '') + '</div>'
-      + more + '</div>';
+      + flags + trail + '</div>';
   }
-  return '<div class="row' + (playing?' playing':'') + '" data-id="' + t.id + '" role="button" tabindex="0">'
-    + '<div class="art">' + artHTML(t.artKey, 40) + '</div>'
+  const lead = selectMode
+    ? '<div style="display:grid;place-items:center"><span class="cbox">' + tick + '</span></div>'
+    : '<div class="art">' + artHTML(t.artKey, 40) + '</div>';
+  return '<div class="' + cls + '" data-id="' + t.id + '" role="button" tabindex="0">'
+    + lead
     + '<div><div class="rt">' + esc(t.title || t.fileName) + '</div>'
     + '<div class="rs">' + esc(artistOf(t))
     + (t.album ? '<span class="alb">' + esc(t.album) + '</span>' : '') + '</div></div>'
-    + '<div class="rtime">' + (t.duration ? fmt(t.duration) : '') + '</div>'
-    + more + '</div>';
+    + flags + trail + '</div>';
 }
 
 function render(){
@@ -1565,7 +1834,10 @@ function render(){
   if(detail) return renderDetail(main);
 
   if(tab === 'songs'){
-    main.innerHTML = tracks.map((t,i)=>rowHTML(t,i)).join('');
+    main.innerHTML = '<button class="sortbtn" data-act="sort">Sorted by <b>'
+      + (SORTS[S.sort] || SORTS.title).name + '</b>'
+      + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>'
+      + tracks.map((t,i)=>rowHTML(t,i)).join('');
     main._ids = tracks.map(t=>t.id); main._label = 'Songs';
   }
   else if(tab === 'albums'){
@@ -1587,7 +1859,21 @@ function render(){
     main._ids = [];
   }
   else if(tab === 'playlists'){
+    const smartRow = (k, icon) => {
+      const n = SMART[k].pick().length;
+      return '<button class="row smartrow" data-smart="' + k + '" '
+        + 'style="grid-template-columns:var(--thumb) minmax(0,1fr) auto">'
+        + '<div class="art">' + icon + '</div>'
+        + '<div><div class="rt">' + SMART[k].name + '</div>'
+        + '<div class="rs">' + n + (n===1?' track':' tracks') + '</div></div>'
+        + '<div class="rtime"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 5l7 7-7 7"/></svg></div>'
+        + '</button>';
+    };
     main.innerHTML = '<div style="padding:17px 18px 5px"><button class="pill" data-act="newlist">New playlist</button></div>'
+      + smartRow('fav',    '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 20s-7-4.5-7-9.5A4 4 0 0112 8a4 4 0 017 2.5C19 15.5 12 20 12 20z"/></svg>')
+      + smartRow('recent', '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></svg>')
+      + smartRow('played', '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V11M12 19V5M19 19v-6"/></svg>')
+      + '<div class="sechead">Your playlists</div>'
       + (lists.length
         ? lists.map(l => {
             const items = l.trackIds.map(trackById).filter(Boolean);
@@ -1621,6 +1907,14 @@ function renderDetail(main){
     const albums = new Set(a.items.map(albumKey)).size;
     sub = albums + (albums===1 ? ' album' : ' albums');
   }
+  else if(detail.kind === 'smart'){
+    const sm = SMART[detail.key];
+    if(!sm){ detail = null; return render(); }
+    items = sm.pick();
+    name = sm.name; kind = 'List'; key = items[0]?.artKey;
+    const who = new Set(items.map(artistOf));
+    sub = items.length ? (who.size === 1 ? [...who][0] : who.size + ' artists') : 'Nothing here yet';
+  }
   else {
     const l = lists.find(x => x.id === detail.key);
     if(!l){ detail = null; return render(); }
@@ -1642,11 +1936,17 @@ function renderDetail(main){
     + '<div id="detailStat">' + esc(stat) + '</div></div></div>'
     + '<div id="detailActions"><button class="pill solid" data-act="playall">Play</button>'
     + '<button class="pill" data-act="shuffleall">Shuffle</button>'
-    + (detail.kind === 'list' ? '<button class="pill" data-act="listmenu">Edit</button>' : '')
+    + (detail.kind === 'list'
+        ? '<button class="pill" data-act="listmenu">Edit</button>'
+          + '<button class="pill' + (reorderMode ? ' solid' : '') + '" data-act="reorder">'
+          + (reorderMode ? 'Done' : 'Reorder') + '</button>'
+        : '')
     + (detail.kind === 'artist' ? '<button class="pill" data-act="artistmenu">Cover</button>' : '')
     + '</div>'
     + (items.length
-       ? items.map((t,i)=>rowHTML(t,i,{forceSleeve:isAlbum, useTrackNo:isAlbum, hideArtist:isAlbum}))
+       ? items.map((t,i)=>rowHTML(t,i,{forceSleeve:isAlbum, useTrackNo:isAlbum,
+                                       hideArtist:isAlbum,
+                                       reorder: reorderMode && detail.kind === 'list'}))
               .join('')
        : '<div class="empty" style="padding:38px 30px"><p>Nothing in this playlist yet.</p></div>');
 
@@ -1662,7 +1962,7 @@ function paint(){
   $('#pPlay').setAttribute('aria-label', playing?'Pause':'Play');
   $('#deck').classList.toggle('spin', playing);
 
-  if(t){
+  if(t && !selectMode){
     $('#mini').classList.add('up');
     $('#miniArt').innerHTML = artHTML(t.artKey, 38);
     $('#miniT').textContent = t.title || t.fileName;
@@ -1673,7 +1973,8 @@ function paint(){
     $('#pAlbum').textContent = t.album || '';
     $('#pSource').textContent = qLabel ? 'From ' + qLabel : '';
     tintFrom(t.artKey);
-  } else $('#mini').classList.remove('up');
+  } else if(!t) $('#mini').classList.remove('up');
+  if(selectMode) $('#mini').classList.remove('up');
 
   $('#pShuffle').classList.toggle('on', shuffle);
   $('#pRepeat').classList.toggle('on', repeat !== 'off');
@@ -1726,6 +2027,12 @@ const SI = {
   pen:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20h4l11-11-4-4L4 16z"/></svg>',
   image:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M4 17l5-5 4 4 2.5-2.5L20 17"/></svg>',
   undo:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 9h11a4.5 4.5 0 010 9h-5"/><path d="M7.5 5.5L4 9l3.5 3.5"/></svg>',
+  heart:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20s-7-4.5-7-9.5A4 4 0 0112 8a4 4 0 017 2.5C19 15.5 12 20 12 20z"/></svg>',
+  minus:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 12h14"/></svg>',
+  check:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 12.5l5 5L20 6.5"/></svg>',
+  folder:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a1.5 1.5 0 011.5-1.5h4L11 8h8.5A1.5 1.5 0 0121 9.5v8A1.5 1.5 0 0119.5 19h-15A1.5 1.5 0 013 17.5z"/></svg>',
+  save:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v10M8 10.5l4 4 4-4"/><path d="M5 18h14"/></svg>',
+  load:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 15V5M8 8.5l4-4 4 4"/><path d="M5 18h14"/></svg>',
   trash:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/></svg>'
 };
 function trackSheet(id){
@@ -1736,7 +2043,13 @@ function trackSheet(id){
     + (t.album ? '<span class="alb">' + esc(t.album) + '</span>' : '') + '</div></div>'
     + '<button class="sheetItem" data-s="playnext" data-id="' + id + '">' + SI.next + 'Play next</button>'
     + '<button class="sheetItem" data-s="enqueue" data-id="' + id + '">' + SI.queue + 'Add to queue</button>'
+    + '<button class="sheetItem" data-s="fav" data-id="' + id + '">' + SI.heart
+    + (t.fav ? 'Remove from favourites' : 'Add to favourites') + '</button>'
     + '<button class="sheetItem" data-s="toplaylist" data-id="' + id + '">' + SI.list + 'Add to playlist</button>'
+    + (detail && detail.kind === 'list'
+        ? '<button class="sheetItem" data-s="unlist" data-id="' + id + '">' + SI.minus
+          + 'Remove from this playlist</button>' : '')
+    + '<button class="sheetItem" data-s="select" data-id="' + id + '">' + SI.check + 'Select tracks</button>'
     + '<button class="sheetItem" data-s="edit" data-id="' + id + '">' + SI.pen + 'Edit details</button>'
     + (t.album ? '<button class="sheetItem" data-s="goalbum" data-id="' + id + '">' + SI.album + 'Go to album</button>' : '')
     + '<button class="sheetItem" data-s="goartist" data-id="' + id + '">' + SI.artist + 'Go to artist</button>'
@@ -1861,6 +2174,14 @@ function buildSettings(){
     + '<div class="hr"></div>'
     + '<div class="group"><h3>Tabs shown</h3><div class="checks">' + tabChecks + '</div></div>'
     + '<div class="hr"></div>'
+    + '<div class="group"><h3>Backup</h3>'
+      + '<div class="chips">'
+      + '<button class="chip" data-act2="backup">Save a backup</button>'
+      + '<button class="chip" data-act2="restore">Restore</button></div>'
+      + '<div class="note" style="padding-left:0;margin-top:11px">Saves your track details, '
+      + 'playlists, covers and settings to one file. The music files themselves are not '
+      + 'included — add them again afterwards and they reconnect automatically.</div></div>'
+    + '<div class="hr"></div>'
     + '<div class="group"><h3>Sound</h3>'
       + '<button class="pill" data-act2="openSound">Equaliser, vocals, speed, sleep timer</button>'
       + '</div>'
@@ -1932,6 +2253,8 @@ $('#setBody').addEventListener('click', async e => {
     if(a === 'clearPaper') S.paperCustom = '';
     if(a === 'clearAccent') S.accentCustom = '';
     if(a === 'openSound'){ openSound(); return; }
+    if(a === 'backup'){ exportBackup(); return; }
+    if(a === 'restore'){ $('#backupPick').click(); return; }
     if(a === 'primeOffline'){ await primeOffline(); return; }
     if(a === 'resetColors'){
       S.theme = DEFAULTS.theme; S.accent = DEFAULTS.accent;
@@ -2251,13 +2574,13 @@ $('#edSave').onclick = async () => {
     artBlobs.set(key, b);
     await put('art', {key, blob: b});
   }
-  tracks.sort(byTitle);
+  tracks.sort(sortTracks);
   ovBack(); render(); paint();
   toast('Details saved');
 };
 
 /* ---------------- library actions ---------------- */
-async function removeTrack(id){
+async function removeTrack(id, quiet){
   const t = trackById(id); if(!t) return;
   tracks = tracks.filter(x => x.id !== id);
   queue = queue.filter(x => x !== id);
@@ -2269,8 +2592,7 @@ async function removeTrack(id){
     au.pause(); qIndex = Math.min(qIndex, queue.length-1);
     if(queue.length) start(); else { qIndex = -1; paint(); }
   }
-  render(); paint();
-  toast('Removed ' + (t.title || t.fileName));
+  if(!quiet){ render(); paint(); toast('Removed ' + (t.title || t.fileName)); }
 }
 async function newPlaylist(withTrack){
   const name = await ask('New playlist', '', 'Create');
@@ -2295,6 +2617,9 @@ function closeAsk(){
   askResolve = null; askValue = null;
   if(r) r(v);
 }
+function confirmAsk(title, okLabel){
+  return ask(title, null, okLabel || 'OK').then(v => v !== null);
+}
 function ask(title, value, okLabel){
   return new Promise(res => {
     if(askResolve){ const old = askResolve; askResolve = null; old(null); }
@@ -2302,14 +2627,20 @@ function ask(title, value, okLabel){
     $('#askTitle').textContent = title;
     $('#askOk').textContent = okLabel || 'Save';
     const inp = $('#askInput');
-    inp.value = value || '';
+    const asking = value !== null;                 // null means a plain yes/no
+    inp.classList.toggle('hide', !asking);
+    inp.value = asking ? (value || '') : '';
     $('#ask').classList.add('up');
     $('#scrim').classList.add('up');
     ovPush(closeAsk);
-    setTimeout(() => { inp.focus(); inp.select(); }, 70);
+    if(asking) setTimeout(() => { inp.focus(); inp.select(); }, 70);
   });
 }
-$('#askOk').onclick = () => { askValue = $('#askInput').value.trim() || null; ovBack(); };
+$('#askOk').onclick = () => {
+  const inp = $('#askInput');
+  askValue = inp.classList.contains('hide') ? 'yes' : (inp.value.trim() || null);
+  ovBack();
+};
 $('#askInput').addEventListener('keydown', e => {
   if(e.key === 'Enter'){ e.preventDefault(); $('#askOk').click(); }
   if(e.key === 'Escape'){ e.preventDefault(); ovBack(); }
@@ -2328,7 +2659,7 @@ function openDetail(d){
   detail = d; render(); $('#main').scrollTop = 0;
   if(fresh) ovPush(closeDetail);
 }
-function closeDetail(){ detail = null; render(); }
+function closeDetail(){ detail = null; reorderMode = false; render(); }
 
 function openPlayer(){
   if(!current()) return;
@@ -2339,7 +2670,17 @@ function openPlayer(){
 function closePlayer(){ $('#player').classList.remove('up'); $('#player').setAttribute('aria-hidden','true'); }
 
 /* ---------------- events ---------------- */
-$('#btnAdd').onclick = () => $('#filePick').click();
+$('#btnAdd').onclick = () => openSheet(
+  '<div id="sheetHead"><div class="t">Add music</div></div>'
+  + '<button class="sheetItem" data-s="addfiles">' + SI.list + 'Choose files</button>'
+  + '<button class="sheetItem" data-s="addfolder">' + SI.folder + 'Choose a folder</button>'
+  + '<button class="sheetItem" data-s="dorestore">' + SI.load + 'Restore from a backup</button>'
+  + '<button class="sheetItem" data-s="dobackup">' + SI.save + 'Save a backup</button>');
+$('#dirPick').onchange = e => { importFiles(e.target.files); e.target.value = ''; };
+$('#backupPick').onchange = e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if(f) restoreBackup(f);
+};
 $('#filePick').onchange = e => { importFiles(e.target.files); e.target.value = ''; };
 $('#btnSearch').onclick = () => {
   const w = $('#searchWrap'), hidden = w.classList.toggle('hide');
@@ -2365,6 +2706,14 @@ $('#main').addEventListener('click', e => {
     const a = act.dataset.act;
     if(a === 'add') $('#filePick').click();
     if(a === 'newlist') newPlaylist();
+    if(a === 'sort'){
+      openSheet('<div id="sheetHead"><div class="t">Sort songs by</div></div>'
+        + Object.entries(SORTS).map(([k,v]) =>
+            '<button class="sheetItem" data-s="sortby" data-val="' + k + '">'
+            + (k === S.sort ? SI.check : '<span style="width:18px"></span>')
+            + v.name + '</button>').join(''));
+    }
+    if(a === 'reorder'){ reorderMode = !reorderMode; render(); }
     if(a === 'playall'){ shuffle = false; playList(main._ids, main._ids[0], main._label); openPlayer(); }
     if(a === 'shuffleall'){ shuffle = true; playList(main._ids, null, main._label); openPlayer(); }
     if(a === 'artistmenu' && detail){
@@ -2400,8 +2749,66 @@ $('#main').addEventListener('click', e => {
   const lst = e.target.closest('[data-list]');
   if(lst){ openDetail({kind:'list', key:lst.dataset.list}); return; }
 
+  const mv = e.target.closest('[data-move]');
+  if(mv){
+    e.stopPropagation();
+    moveInPlaylist(mv.dataset.id, mv.dataset.move === 'up' ? -1 : 1);
+    return;
+  }
+  const sm = e.target.closest('[data-smart]');
+  if(sm){ openDetail({kind:'smart', key:sm.dataset.smart}); return; }
+
   const row = e.target.closest('.row[data-id]');
-  if(row) playList(main._ids, row.dataset.id, main._label);
+  if(!row) return;
+  if(selectMode){
+    const id = row.dataset.id;
+    if(selected.has(id)) selected.delete(id); else selected.add(id);
+    row.classList.toggle('sel', selected.has(id));
+    paintSelCount();
+    return;
+  }
+  playList(main._ids, row.dataset.id, main._label);
+});
+
+async function moveInPlaylist(id, dir){
+  if(!detail || detail.kind !== 'list') return;
+  const l = lists.find(x => x.id === detail.key);
+  if(!l) return;
+  const i = l.trackIds.indexOf(id), j = i + dir;
+  if(i < 0 || j < 0 || j >= l.trackIds.length) return;
+  [l.trackIds[i], l.trackIds[j]] = [l.trackIds[j], l.trackIds[i]];
+  await put('lists', l);
+  render();
+}
+
+$('#selbar').addEventListener('click', async e => {
+  const b = e.target.closest('[data-sel]'); if(!b) return;
+  const what = b.dataset.sel;
+  if(what === 'done') return exitSelect();
+  if(what === 'all'){
+    const ids = $('#main')._ids || [];
+    if(selected.size >= ids.length) selected.clear();
+    else ids.forEach(id => selected.add(id));
+    render(); paintSelCount(); return;
+  }
+  if(!selected.size){ toast('Nothing selected'); return; }
+  if(what === 'playlist'){
+    const ids = [...selected];
+    openSheet('<div id="sheetHead"><div class="t">Add ' + ids.length + ' to playlist</div></div>'
+      + '<button class="sheetItem" data-s="bulknew">' + SI.list + 'New playlist</button>'
+      + lists.map(l => '<button class="sheetItem" data-s="bulkadd" data-list="' + l.id + '">'
+          + SI.list + esc(l.name) + '</button>').join(''));
+    return;
+  }
+  if(what === 'remove'){
+    const ids = [...selected];
+    const ok = await confirmAsk('Remove ' + ids.length
+      + (ids.length===1 ? ' track from your library?' : ' tracks from your library?'), 'Remove');
+    if(!ok) return;
+    for(const id of ids) await removeTrack(id, true);
+    exitSelect();
+    toast('Removed ' + ids.length + (ids.length===1?' track':' tracks'));
+  }
 });
 $('#main').addEventListener('keydown', e => {
   if(e.key !== 'Enter' && e.key !== ' ') return;
@@ -2415,9 +2822,43 @@ $('#sheet').addEventListener('click', async e => {
   const {s, id} = b.dataset;
   if(s === 'playnext'){ if(qIndex >= 0){ queue.splice(qIndex+1, 0, id); toast('Playing next'); } else playList([id], id, 'Queue'); }
   if(s === 'enqueue'){ if(qIndex >= 0){ queue.push(id); toast('Added to queue'); } else playList([id], id, 'Queue'); }
+  if(s === 'addfiles'){ closeSheetRaw(); $('#filePick').click(); return; }
+  if(s === 'addfolder'){ closeSheetRaw(); $('#dirPick').click(); return; }
+  if(s === 'dorestore'){ closeSheetRaw(); $('#backupPick').click(); return; }
+  if(s === 'dobackup'){ closeSheetRaw(); exportBackup(); return; }
+  if(s === 'fav'){ closeSheetRaw(); return toggleFav(id); }
+  if(s === 'select'){ closeSheetRaw(); return enterSelect(id); }
+  if(s === 'sortby'){ S.sort = b.dataset.val; tracks.sort(sortTracks); saveSettings(); }
+  if(s === 'unlist' && detail && detail.kind === 'list'){
+    const l = lists.find(x => x.id === detail.key);
+    if(l){
+      l.trackIds = l.trackIds.filter(x => x !== id);
+      await put('lists', l); render(); toast('Removed from ' + l.name);
+    }
+  }
   if(s === 'toplaylist'){ closeSheet(); return playlistSheet(id); }
   if(s === 'createwith'){ closeSheet(); return newPlaylist(id); }
   if(s === 'addto') await addToList(b.dataset.list, id);
+  if(s === 'bulkadd'){
+    const l = lists.find(x => x.id === b.dataset.list);
+    if(l){
+      for(const tid of selected) if(!l.trackIds.includes(tid)) l.trackIds.push(tid);
+      await put('lists', l);
+      toast('Added ' + selected.size + ' to ' + l.name);
+      exitSelect();
+    }
+  }
+  if(s === 'bulknew'){
+    closeSheetRaw();
+    const name = await ask('New playlist', '', 'Create');
+    if(name){
+      const l = {id: uid(), name, trackIds: [...selected]};
+      lists.push(l); await put('lists', l);
+      toast('Created ' + name + ' with ' + l.trackIds.length);
+      exitSelect();
+    }
+    return;
+  }
   if(s === 'edit'){ closeSheetRaw(); return openEditor(id, true); }
   if(s === 'goalbum'){ const t = trackById(id); query=''; $('#search').value=''; openDetail({kind:'album', key:albumKey(t)}); }
   if(s === 'goartist'){ const t = trackById(id); query=''; $('#search').value=''; openDetail({kind:'artist', key:artistOf(t).toLowerCase()}); }
