@@ -565,6 +565,7 @@ body[data-dark="1"] .sheetItem.danger{color:#E08B77}
   <div id="lyricsWrap">
     <div id="lyricsBar">
       <div class="t" id="lyricsKind"></div>
+      <button id="lyricsFind">Find</button>
       <button id="lyricsEdit">Edit</button>
       <button id="lyricsClose">Close</button>
     </div>
@@ -1712,6 +1713,110 @@ function parseLyrics(text){
   return lines.length ? {timed: false, lines} : null;
 }
 
+/* ---- looking lyrics up online ----
+   LRCLIB is a free community database made for music players. Nothing is sent
+   but the track title, artist, album and length; results are saved on the
+   device so they work offline afterwards. */
+const LRC_API = 'https://lrclib.net/api/';
+const qstr = o => Object.entries(o)
+  .filter(([,v]) => v !== null && v !== undefined && v !== '')
+  .map(([k,v]) => k + '=' + encodeURIComponent(v)).join('&');
+
+function pickLyrics(d){
+  if(!d) return null;
+  if(d.syncedLyrics && d.syncedLyrics.trim()) return {text: d.syncedLyrics, synced: true};
+  if(d.plainLyrics && d.plainLyrics.trim()) return {text: d.plainLyrics, synced: false};
+  return null;
+}
+async function lyricsLookup(t){
+  const title = (t.title || '').trim();
+  const artist = (t.artist || t.albumArtist || '').trim();
+  if(!title) return {ok:false, why:'untitled'};
+  if(navigator.onLine === false) return {ok:false, why:'offline'};
+  const dur = Math.round(t.duration || 0);
+
+  if(artist && dur){
+    try{
+      const r = await fetch(LRC_API + 'get?' + qstr({
+        track_name:title, artist_name:artist, album_name:t.album, duration:dur}));
+      if(r.ok){
+        const d = await r.json();
+        const got = pickLyrics(d);
+        if(got) return Object.assign({ok:true}, got);
+        if(d && d.instrumental) return {ok:true, instrumental:true};
+      }
+    }catch(e){ return {ok:false, why:'blocked'}; }
+  }
+  try{
+    const r = await fetch(LRC_API + 'search?' + qstr({track_name:title, artist_name:artist}));
+    if(!r.ok) return {ok:false, why:'none'};
+    const arr = await r.json();
+    if(!Array.isArray(arr) || !arr.length) return {ok:false, why:'none'};
+    // Wrong lyrics are worse than none, so a candidate whose length clearly
+    // disagrees is thrown out rather than used as a last resort.
+    let pool = arr;
+    if(dur){
+      const close = arr.filter(x => x.duration && Math.abs(x.duration - dur) <= 4);
+      pool = close.length ? close : arr.filter(x => !x.duration);
+    }
+    if(!pool.length) return {ok:false, why:'none'};
+    pool = pool.slice().sort((a,b) => (a.syncedLyrics ? 0 : 1) - (b.syncedLyrics ? 0 : 1));
+    const best = {x: pool[0]};
+    const got = pickLyrics(best.x);
+    if(got) return Object.assign({ok:true}, got);
+    if(best.x.instrumental) return {ok:true, instrumental:true};
+    return {ok:false, why:'none'};
+  }catch(e){ return {ok:false, why:'blocked'}; }
+}
+async function findLyricsFor(t, quiet){
+  const res = await lyricsLookup(t);
+  if(res.ok && res.text){
+    t.lyrics = res.text;
+    delete t.lyricsNone;
+    try{ await put('tracks', t); }catch(e){}
+    if(!quiet) toast(res.synced ? 'Found timed lyrics' : 'Found lyrics');
+    return 'found';
+  }
+  if(res.ok && res.instrumental){
+    t.lyrics = ''; t.lyricsNone = Date.now();
+    try{ await put('tracks', t); }catch(e){}
+    if(!quiet) toast('Listed as instrumental');
+    return 'instrumental';
+  }
+  if(res.why === 'none'){
+    t.lyricsNone = Date.now();
+    try{ await put('tracks', t); }catch(e){}
+  }
+  if(!quiet){
+    toast(res.why === 'blocked' ? "Couldn't reach the lyrics database"
+        : res.why === 'offline' ? 'No connection'
+        : res.why === 'untitled' ? 'This track needs a title first'
+        : 'No lyrics found for this one');
+  }
+  return res.why;
+}
+async function findAllLyrics(){
+  const todo = tracks.filter(t => !(t.lyrics || '').trim() && !t.lyricsNone && (t.title || '').trim());
+  if(!todo.length){ toast('Nothing left to look up'); return; }
+  if(navigator.onLine === false){ toast('No connection'); return; }
+  $('#imp').classList.add('up');
+  let done = 0, found = 0, blocked = 0;
+  for(const t of todo){
+    $('#impT').textContent = 'Looking up lyrics — ' + (done+1) + ' of ' + todo.length;
+    $('#impBar>i').style.width = (done/todo.length*100) + '%';
+    const r = await findLyricsFor(t, true);
+    if(r === 'found') found++;
+    if(r === 'blocked'){ blocked++; if(blocked >= 3) break; }
+    done++;
+    await new Promise(r2 => setTimeout(r2, 350));
+  }
+  $('#imp').classList.remove('up');
+  render();
+  if($('#player').classList.contains('lyrics')) buildLyrics();
+  toast(blocked >= 3 ? "Couldn't reach the lyrics database"
+      : 'Found lyrics for ' + found + ' of ' + done);
+}
+
 let lyricsData = null, lyricsIdx = -1;
 function buildLyrics(){
   const t = current();
@@ -1723,8 +1828,9 @@ function buildLyrics(){
     $('#lyricsKind').textContent = '';
     box.className = '';
     box.innerHTML = '<div class="lyempty">No lyrics saved for this track.<br><br>'
-      + 'Add them with the Edit button above, or put a matching <b>.lrc</b> file in the '
-      + 'folder you import from — timed ones scroll along with the music.</div>';
+      + '<button class="pill solid" id="lyFind">Look them up online</button>'
+      + '<br><br>You can also paste them with Edit above, or drop a matching '
+      + '<b>.lrc</b> file in the folder you import from.</div>';
     return;
   }
   $('#lyricsKind').textContent = lyricsData.timed ? 'Following the music' : 'Lyrics';
@@ -1762,6 +1868,18 @@ function openLyrics(){
 function closeLyrics(){ $('#player').classList.remove('lyrics'); }
 $('#pArt').addEventListener('click', openLyrics);
 $('#lyricsClose').onclick = closeLyrics;
+async function lookupCurrent(btn){
+  const t = current(); if(!t) return;
+  const was = btn ? btn.textContent : null;
+  if(btn){ btn.textContent = '…'; btn.disabled = true; }
+  await findLyricsFor(t);
+  if(btn){ btn.textContent = was; btn.disabled = false; }
+  buildLyrics(); render();
+}
+$('#lyricsFind').onclick = e => lookupCurrent(e.currentTarget);
+$('#lyricsScroll').addEventListener('click', e => {
+  if(e.target.closest('#lyFind')) lookupCurrent(e.target.closest('#lyFind'));
+});
 $('#lyricsEdit').onclick = () => { const t = current(); if(t){ closeLyrics(); openEditor(t.id); } };
 
 /* ---------------- sound ---------------- */
@@ -2419,6 +2537,7 @@ const SI = {
   minus:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 12h14"/></svg>',
   check:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 12.5l5 5L20 6.5"/></svg>',
   quote:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h11M4 12h16M4 17h9"/></svg>',
+  search:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.4 15.4L21 21"/></svg>',
   folder:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a1.5 1.5 0 011.5-1.5h4L11 8h8.5A1.5 1.5 0 0121 9.5v8A1.5 1.5 0 0119.5 19h-15A1.5 1.5 0 013 17.5z"/></svg>',
   save:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v10M8 10.5l4 4 4-4"/><path d="M5 18h14"/></svg>',
   load:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 15V5M8 8.5l4-4 4 4"/><path d="M5 18h14"/></svg>',
@@ -2440,6 +2559,9 @@ function trackSheet(id){
           + 'Remove from this playlist</button>' : '')
     + '<button class="sheetItem" data-s="select" data-id="' + id + '">' + SI.check + 'Select tracks</button>'
     + '<button class="sheetItem" data-s="lyrics" data-id="' + id + '">' + SI.quote + 'Lyrics</button>'
+    + (!(t.lyrics || '').trim()
+        ? '<button class="sheetItem" data-s="findlyrics" data-id="' + id + '">'
+          + SI.search + 'Find lyrics online</button>' : '')
     + '<button class="sheetItem" data-s="edit" data-id="' + id + '">' + SI.pen + 'Edit details</button>'
     + (t.album ? '<button class="sheetItem" data-s="goalbum" data-id="' + id + '">' + SI.album + 'Go to album</button>' : '')
     + '<button class="sheetItem" data-s="goartist" data-id="' + id + '">' + SI.artist + 'Go to artist</button>'
@@ -2564,6 +2686,13 @@ function buildSettings(){
     + '<div class="hr"></div>'
     + '<div class="group"><h3>Tabs shown</h3><div class="checks">' + tabChecks + '</div></div>'
     + '<div class="hr"></div>'
+    + '<div class="group"><h3>Lyrics</h3>'
+      + '<button class="pill" data-act2="allLyrics">Look up lyrics for everything</button>'
+      + '<div class="note" style="padding-left:0;margin-top:11px">Checks LRCLIB, a free '
+      + 'community lyrics database, for every track that has none. Only the title, artist, '
+      + 'album and length are sent. What it finds is saved on this device, so it still works '
+      + 'offline afterwards.</div></div>'
+    + '<div class="hr"></div>'
     + '<div class="group"><h3>Backup</h3>'
       + '<div class="chips">'
       + '<button class="chip" data-act2="backup">Save a backup</button>'
@@ -2643,6 +2772,7 @@ $('#setBody').addEventListener('click', async e => {
     if(a === 'clearPaper') S.paperCustom = '';
     if(a === 'clearAccent') S.accentCustom = '';
     if(a === 'openSound'){ openSound(); return; }
+    if(a === 'allLyrics'){ closeSettings(); await findAllLyrics(); return; }
     if(a === 'backup'){ exportBackup(); return; }
     if(a === 'restore'){ $('#backupPick').click(); return; }
     if(a === 'primeOffline'){ await primeOffline(); return; }
@@ -3264,6 +3394,13 @@ $('#sheet').addEventListener('click', async e => {
   if(s === 'dobackup'){ closeSheetRaw(); exportBackup(); return; }
   if(s === 'fav'){ closeSheetRaw(); return toggleFav(id); }
   if(s === 'select'){ closeSheetRaw(); return enterSelect(id); }
+  if(s === 'findlyrics'){
+    closeSheetRaw();
+    const t = trackById(id);
+    if(t) await findLyricsFor(t);
+    render();
+    return;
+  }
   if(s === 'lyrics'){
     closeSheetRaw();
     if(current()?.id !== id) await playList([id], id, 'Lyrics');
