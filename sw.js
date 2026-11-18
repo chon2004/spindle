@@ -1,8 +1,9 @@
 /* Spindle service worker — lets the app open with no connection.
    Your music never goes through here; it lives in IndexedDB on the device. */
-const V = 'spindle-gh-1';
+const V = 'spindle-gh-3';
 const SHELL = ['./', './index.html', './manifest.webmanifest',
-               './icon-192.png', './icon-512.png'];
+               './icon-192.png', './icon-512.png',
+               './sc-shuffle.png', './sc-resume.png', './sc-lists.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -69,6 +70,9 @@ self.addEventListener('fetch', e => {
     );
     return;
   }
+
+  // Lyrics lookups always go to the network; never cache them.
+  if(/(^|\.)lrclib\.net$/.test(url.hostname)) return;
 
   // Fonts: cache first, they never change.
   if(/(^|\.)(googleapis|gstatic)\.com$/.test(url.hostname)){
