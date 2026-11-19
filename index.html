@@ -826,7 +826,8 @@ const ACCENTS = {
 const DEFAULTS = {
   theme:'sleeve', accent:'petrol', paperCustom:'', accentCustom:'',
   inkStrength:'normal', grain:1, artAccent:0, levelling:0, crossfade:0,
-  rows:'comfortable', listStyle:'artwork', cols:'auto', sort:'title',
+  rows:'comfortable', listStyle:'artwork', cols:'auto',
+  sort:'title', sortAlbums:'album', sortArtists:'name',
   eq:[0,0,0,0,0,0], vocals:0, speed:1,
   tabs:['songs','albums','artists','playlists']
 };
@@ -1143,6 +1144,35 @@ const SORTS = {
 };
 const sortTracks = (a,b) => (SORTS[S.sort] || SORTS.title).fn(a,b);
 
+const ALBUM_SORTS = {
+  album:  {name:'Album name',     fn:(a,b)=>coll.compare(a.album,b.album)},
+  artist: {name:'Artist',         fn:(a,b)=>coll.compare(a.artist,b.artist)
+                                           || coll.compare(a.album,b.album)},
+  year:   {name:'Year, newest',   fn:(a,b)=>(b.year||0)-(a.year||0)
+                                           || coll.compare(a.album,b.album)},
+  older:  {name:'Year, oldest',   fn:(a,b)=>((a.year||9999)-(b.year||9999))
+                                           || coll.compare(a.album,b.album)},
+  added:  {name:'Recently added', fn:(a,b)=>(b.added||0)-(a.added||0)},
+  played: {name:'Most played',    fn:(a,b)=>(b.plays||0)-(a.plays||0)
+                                           || coll.compare(a.album,b.album)}
+};
+const ARTIST_SORTS = {
+  name:   {name:'Name',           fn:(a,b)=>coll.compare(a.name,b.name)},
+  tracks: {name:'Most tracks',    fn:(a,b)=>(b.items.length-a.items.length)
+                                           || coll.compare(a.name,b.name)},
+  albums: {name:'Most albums',    fn:(a,b)=>(b.albums-a.albums) || coll.compare(a.name,b.name)},
+  added:  {name:'Recently added', fn:(a,b)=>(b.added||0)-(a.added||0)},
+  played: {name:'Most played',    fn:(a,b)=>(b.plays||0)-(a.plays||0)
+                                           || coll.compare(a.name,b.name)}
+};
+/* totals a group inherits from its tracks, so it can be sorted by them */
+function rollUp(g){
+  g.added = g.items.reduce((m,t) => Math.max(m, t.addedAt || 0), 0);
+  g.plays = g.items.reduce((n,t) => n + (t.plays || 0), 0);
+  g.year  = g.items.reduce((y,t) => Math.max(y, parseInt(t.year, 10) || 0), 0);
+  return g;
+}
+
 function artUrl(key){
   if(!key) return null;
   if(artUrls.has(key)) return artUrls.get(key);
@@ -1167,6 +1197,8 @@ async function load(){
   S.vocals = Math.max(-1, Math.min(1, Number(S.vocals) || 0));
   if(!SPEEDS.includes(S.speed)) S.speed = 1;
   if(!SORTS[S.sort]) S.sort = 'title';
+  if(!ALBUM_SORTS[S.sortAlbums]) S.sortAlbums = 'album';
+  if(!ARTIST_SORTS[S.sortArtists]) S.sortArtists = 'name';
   tracks.sort(sortTracks);
 }
 
@@ -2252,7 +2284,8 @@ function groupAlbums(){
       artist:t.albumArtist || t.artist || 'Unknown artist', items:[]});
     m.get(k).items.push(t);
   });
-  return [...m.values()].sort((a,b)=>coll.compare(a.album,b.album));
+  const out = [...m.values()].map(rollUp);
+  return out.sort((ALBUM_SORTS[S.sortAlbums] || ALBUM_SORTS.album).fn);
 }
 function groupArtists(){
   const m = new Map();
@@ -2261,7 +2294,12 @@ function groupArtists(){
     if(!m.has(k)) m.set(k, {key:k, name, items:[]});
     m.get(k).items.push(t);
   });
-  return [...m.values()].sort((a,b)=>coll.compare(a.name,b.name));
+  const out = [...m.values()].map(g => {
+    rollUp(g);
+    g.albums = new Set(g.items.map(albumKey)).size;
+    return g;
+  });
+  return out.sort((ARTIST_SORTS[S.sortArtists] || ARTIST_SORTS.name).fn);
 }
 
 function rowHTML(t, i, opts){
@@ -2338,15 +2376,18 @@ function render(){
 
   if(detail) return renderDetail(main);
 
+  const sortBar = (act, label) =>
+    '<button class="sortbtn" data-act="' + act + '">Sorted by <b>' + label + '</b>'
+    + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>';
+
   if(tab === 'songs'){
-    main.innerHTML = '<button class="sortbtn" data-act="sort">Sorted by <b>'
-      + (SORTS[S.sort] || SORTS.title).name + '</b>'
-      + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>'
+    main.innerHTML = sortBar('sort', (SORTS[S.sort] || SORTS.title).name)
       + tracks.map((t,i)=>rowHTML(t,i)).join('');
     main._ids = tracks.map(t=>t.id); main._label = 'Songs';
   }
   else if(tab === 'albums'){
-    main.innerHTML = '<div class="grid">' + groupAlbums().map(a =>
+    main.innerHTML = sortBar('sortAlbums', (ALBUM_SORTS[S.sortAlbums] || ALBUM_SORTS.album).name)
+      + '<div class="grid">' + groupAlbums().map(a =>
       '<button class="tile" data-album="' + esc(a.key) + '">'
       + '<div class="sleeveart"><div class="art">' + artHTML(a.key, 54, true) + '</div></div>'
       + '<div class="tt">' + esc(a.album) + '</div><div class="ts">' + esc(a.artist) + '</div></button>').join('')
@@ -2354,7 +2395,8 @@ function render(){
     main._ids = [];
   }
   else if(tab === 'artists'){
-    main.innerHTML = groupArtists().map(a =>
+    main.innerHTML = sortBar('sortArtists', (ARTIST_SORTS[S.sortArtists] || ARTIST_SORTS.name).name)
+      + groupArtists().map(a =>
       '<button class="row" data-artist="' + esc(a.key) + '" style="grid-template-columns:var(--thumb) minmax(0,1fr) auto">'
       + '<div class="art">' + artHTML(artistCover(a.key, a.items), 40) + '</div>'
       + '<div><div class="rt">' + esc(a.name) + '</div>'
@@ -3272,13 +3314,15 @@ $('#main').addEventListener('click', e => {
     const a = act.dataset.act;
     if(a === 'add') $('#filePick').click();
     if(a === 'newlist') newPlaylist();
-    if(a === 'sort'){
-      openSheet('<div id="sheetHead"><div class="t">Sort songs by</div></div>'
-        + Object.entries(SORTS).map(([k,v]) =>
-            '<button class="sheetItem" data-s="sortby" data-val="' + k + '">'
-            + (k === S.sort ? SI.check : '<span style="width:18px"></span>')
+    const sortSheet = (title, table, chosen, action) =>
+      openSheet('<div id="sheetHead"><div class="t">' + title + '</div></div>'
+        + Object.entries(table).map(([k,v]) =>
+            '<button class="sheetItem" data-s="' + action + '" data-val="' + k + '">'
+            + (k === chosen ? SI.check : '<span style="width:18px"></span>')
             + v.name + '</button>').join(''));
-    }
+    if(a === 'sort') sortSheet('Sort songs by', SORTS, S.sort, 'sortby');
+    if(a === 'sortAlbums') sortSheet('Sort albums by', ALBUM_SORTS, S.sortAlbums, 'sortAlbumsBy');
+    if(a === 'sortArtists') sortSheet('Sort artists by', ARTIST_SORTS, S.sortArtists, 'sortArtistsBy');
     if(a === 'reorder'){ reorderMode = !reorderMode; render(); }
     if(a === 'playall'){ shuffle = false; playList(main._ids, main._ids[0], main._label); openPlayer(); }
     if(a === 'shuffleall'){ shuffle = true; playList(main._ids, null, main._label); openPlayer(); }
@@ -3407,7 +3451,9 @@ $('#sheet').addEventListener('click', async e => {
     openPlayer(); openLyrics();
     return;
   }
-  if(s === 'sortby'){ S.sort = b.dataset.val; tracks.sort(sortTracks); saveSettings(); }
+  if(s === 'sortby'){ S.sort = b.dataset.val; tracks.sort(sortTracks); saveSettings(); render(); }
+  if(s === 'sortAlbumsBy'){ S.sortAlbums = b.dataset.val; saveSettings(); render(); }
+  if(s === 'sortArtistsBy'){ S.sortArtists = b.dataset.val; saveSettings(); render(); }
   if(s === 'unlist' && detail && detail.kind === 'list'){
     const l = lists.find(x => x.id === detail.key);
     if(l){
